@@ -1,15 +1,22 @@
 package com.smartcontract.service;
 
+import com.alibaba.fastjson.JSONObject;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jayway.jsonpath.Configuration;
+import com.jayway.jsonpath.JsonPath;
 import com.smartcontract.MessageTitle;
 import com.smartcontract.model.ContractBean;
 import com.smartcontract.model.ContractTemplateBean;
 import com.smartcontract.model.DealBean;
+import com.smartcontract.model.DslHistory;
+import com.smartcontract.model.EventBean;
 import com.smartcontract.model.Message;
 import com.smartcontract.model.MessageProcessResponse;
 import com.smartcontract.model.TradeBean;
 import com.smartcontract.repository.ContractBeanRepository;
 import com.smartcontract.repository.ContractTemplateBeanRepository;
+import com.smartcontract.repository.DslHistoryRepository;
 import com.smartcontract.repository.MessageRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,7 +25,10 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
+
+import static com.smartcontract.service.ScriptProcessHelper.runPyScript;
 
 @Service
 @Slf4j
@@ -30,12 +40,16 @@ public class MessageServiceImpl implements MessageService{
 
     private final ContractTemplateBeanRepository contractTemplateBeanRepository;
 
+    private final DslHistoryRepository dslHistoryRepository;
+
     @Autowired
     public MessageServiceImpl(MessageRepository messageRepository, ContractBeanRepository contractBeanRepository,
-                              ContractTemplateBeanRepository contractTemplateBeanRepository) {
+                              ContractTemplateBeanRepository contractTemplateBeanRepository,
+                              DslHistoryRepository dslHistoryRepository) {
         this.messageRepository = messageRepository;
         this.contractBeanRepository = contractBeanRepository;
         this.contractTemplateBeanRepository = contractTemplateBeanRepository;
+        this.dslHistoryRepository = dslHistoryRepository;
     }
 
     @Override
@@ -60,17 +74,17 @@ public class MessageServiceImpl implements MessageService{
                 case UPLOAD_CONTENT:
                     int resCode = uploadContent(message.getBody());
                     if (resCode == 0) {
-                        response.setStatus(resCode);
+                        response.setResCode(resCode);
                         response.setMessageUuid(message.getMessageUuid());
-                        response.setErrMsg("");
+                        response.setResMsg("Successfully upload the new contract!");
                     } else {
-                        response.setStatus(-1);
+                        response.setResCode(-1);
                         response.setMessageUuid(message.getMessageUuid());
-                        response.setErrMsg("Failed to upload the contract content!");
+                        response.setResMsg("Failed to upload the contract content!");
                     }
                     break;
                 case EVENT:
-                    return processEvent(message);
+                    return processEvent(message.getBody());
 
                 default:
                     break;
@@ -83,7 +97,6 @@ public class MessageServiceImpl implements MessageService{
         ObjectMapper objectMapper = new ObjectMapper();
         try {
             ContractBean contractBean = objectMapper.readValue(msgBody, ContractBean.class);
-            System.out.println("contractNo: " + contractBean.getTrades());
             // get the corresponding template with templateId
             String templateId = contractBean.getContractTemplateId();
             Optional<ContractTemplateBean> templateBean = contractTemplateBeanRepository.findByContractTemplateId(templateId);
@@ -125,7 +138,70 @@ public class MessageServiceImpl implements MessageService{
 //    }
 
 
-    private MessageProcessResponse processEvent(Message message) {
+    private MessageProcessResponse processEvent(String msgBody) {
+        JSONObject dslParam = new JSONObject();
+        JSONObject msgObj = JSONObject.parseObject(msgBody);
+        JSONObject eventParams = (JSONObject) msgObj.get("paramHash");
+        String eventName = msgObj.getString("eventName");
+        String contractCode = msgObj.getString("contractCode");
+        String tradeId = msgObj.getString("tradeId");
+        String dealId = msgObj.getString("dealId");
+        log.info("msgBody: {}", msgObj);
+        Optional<ContractBean> optionalContractBean = contractBeanRepository.findTopContractBeanByBasicInfo_ContractNoOrderByCreateTimeDesc(contractCode);
+        if (optionalContractBean.isPresent()) {
+            ContractBean contractBean = optionalContractBean.get();
+            TradeBean tradeBean = contractBean.getTrades().stream()
+                    .filter(trade -> trade.getTradeId().equals(tradeId))
+                    .findAny().orElse(null);
+            if (tradeBean != null) {
+                DealBean dealBean = tradeBean.getDeals().stream()
+                        .filter(deal -> deal.getDealId().equals(dealId))
+                        .findAny().orElse(null);
+                if (dealBean != null) {
+                    EventBean eventBean = dealBean.getEvents().stream()
+                            .filter(event -> event.getName().equals(eventName))
+                            .findAny().orElse(null);
+                    JSONObject internalParamBean = Objects.requireNonNull(eventBean).getInternalParams();
+                    JSONObject internalParams = new JSONObject();
+                    ObjectMapper objectMapper = new ObjectMapper();
+                    try {
+                        Object contractPathObj = Configuration.defaultConfiguration().jsonProvider()
+                                .parse(objectMapper.writeValueAsString(contractBean));
+                        for (String key : internalParamBean.keySet()) {
+                            internalParams.put(key, JsonPath.read(contractPathObj, internalParamBean.getString(key)));
+                        }
+                    } catch (JsonProcessingException e) {
+                        throw new RuntimeException(e);
+                    }
+
+                    dslParam.put("internalParams", internalParams);
+                    dslParam.put("externalParams", eventParams);
+                    dslParam.put("variables", dealBean.getContractState().getVariables());
+                    dslParam.put("script", Objects.requireNonNull(eventBean).getHandler().getScript());
+                    dslParam.put("functions", contractBean.getFunctions());
+//                    log.info("dslParam: {}", dslParam);
+                } else {
+                    log.error("dealBean null");
+                }
+            } else {
+                log.error("tradeBean null");
+            }
+        }
+        JSONObject dslResult = runPyScript(dslParam);
+        log.info("dslResult: {}", dslResult);
+
+        DslHistory dslHistoryRecord = new DslHistory();
+        dslHistoryRecord.setDslParam(String.valueOf(dslParam));
+        dslHistoryRecord.setEventNo(eventParams.getString("eventNo"));
+        dslHistoryRecord.setEventName(eventName);
+        dslHistoryRecord.setContractCode(contractCode);
+        dslHistoryRecord.setLogicContractCode(msgObj.getString("logicContractCode"));
+        dslHistoryRecord.setTradeId(tradeId);
+        dslHistoryRecord.setDealId(dealId);
+        dslHistoryRecord.setCreateTime(new Date());
+        dslHistoryRecord.setDslResult(String.valueOf(dslResult));
+//        dslHistoryRepository.save(dslHistoryRecord);
+
         return null;
     }
 

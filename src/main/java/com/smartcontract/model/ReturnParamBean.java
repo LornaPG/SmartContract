@@ -9,4 +9,6 @@ public class ReturnParamBean {
     private String from;
 
     private String to;
+
+    private String toContractCode;
 }

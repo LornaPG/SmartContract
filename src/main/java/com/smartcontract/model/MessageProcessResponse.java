@@ -5,6 +5,6 @@ import lombok.Data;
 @Data
 public class MessageProcessResponse {
     private String messageUuid;
-    private Integer status;
-    private String errMsg;
+    private Integer resCode;
+    private String resMsg;
 }

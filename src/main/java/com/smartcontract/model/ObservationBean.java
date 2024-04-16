@@ -4,6 +4,8 @@ import com.alibaba.fastjson.JSONArray;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 @Data
 @NoArgsConstructor
 public class ObservationBean {
@@ -19,7 +21,7 @@ public class ObservationBean {
 
     private ExtraParamBean extraParams;
 
-    private ReturnParamBean returnParams;
+    private List<ReturnParamBean> returnParams;
     
     private ObservationLogicBean observationLogic;
 }
