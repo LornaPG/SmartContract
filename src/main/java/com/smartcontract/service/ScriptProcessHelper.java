@@ -23,7 +23,7 @@ public class ScriptProcessHelper {
         Binding binding = new Binding();
         binding.setVariable("weightScale", WEIGHT_SCALE);
         binding.setVariable("amountScale", AMOUNT_SCALE);
-        binding.setVariable("variables", dslParam.get("variables"));
+//        binding.setVariable("variables", dslParam.get("variables"));
         binding.setVariable("externalParams", dslParam.get("externalParams"));
         binding.setVariable("internalParams", dslParam.get("internalParams"));
         binding.setVariable("dslResult", null);
@@ -39,9 +39,9 @@ public class ScriptProcessHelper {
         JSONObject output = new JSONObject();
         Object dslResult = binding.getVariable("dslResult");
         Object instructionPipeline = binding.getVariable("instructionPipeline");
-        Object variablesResult = binding.getVariable("variables");
+        Object internalParamsResult = binding.getVariable("internalParams");
         output.put("dslResult", dslResult);
-        output.put("variables", variablesResult);
+        output.put("internalParams", internalParamsResult);
         output.put("instructionPipeline", instructionPipeline);
         output.put("script", groovyScript);
         return output;

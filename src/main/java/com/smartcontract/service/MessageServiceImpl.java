@@ -13,22 +13,26 @@ import com.smartcontract.model.DslHistory;
 import com.smartcontract.model.EventBean;
 import com.smartcontract.model.Message;
 import com.smartcontract.model.MessageProcessResponse;
+import com.smartcontract.model.ReturnParamBean;
 import com.smartcontract.model.TradeBean;
 import com.smartcontract.repository.ContractBeanRepository;
 import com.smartcontract.repository.ContractTemplateBeanRepository;
 import com.smartcontract.repository.DslHistoryRepository;
 import com.smartcontract.repository.MessageRepository;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.groovy.parser.antlr4.util.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
 import static com.smartcontract.service.ScriptProcessHelper.runPyScript;
+import static com.smartcontract.util.CustomObjectMapper.createObjectMapper;
 
 @Service
 @Slf4j
@@ -41,6 +45,86 @@ public class MessageServiceImpl implements MessageService{
     private final ContractTemplateBeanRepository contractTemplateBeanRepository;
 
     private final DslHistoryRepository dslHistoryRepository;
+
+    private final ObjectMapper objectMapper = createObjectMapper();
+
+    private static final String TEST_STRING = "{\n" +
+            "  \"dslResult\": {\n" +
+            "    \"contractNo\": \"20240311-BDFZ-EGNSB005-01\",\n" +
+            "    \"dealId\": \"20240311-BDFZ-EGNSB005-01\",\n" +
+            "    \"tradeId\": \"20240311-BDFZ-EGNSB005-01\"\n" +
+            "  },\n" +
+            "  \"internalParams\": {\n" +
+            "    \"variables\": {\n" +
+            "      \"marginObservationCount\": 0.0,\n" +
+            "      \"feeDetailBatchCount\": 0.0,\n" +
+            "      \"priceObjects\": [\n" +
+            "        {\n" +
+            "          \"batchNo\": \"1\",\n" +
+            "          \"variationMarginData\": [\n" +
+            "            {\n" +
+            "              \"isFirst\": 1.0,\n" +
+            "              \"markContractCodeType\": 1.0,\n" +
+            "              \"dateRange\": {\n" +
+            "                \"dateList\": [\n" +
+            "                  \"currentDate()\"\n" +
+            "                ]\n" +
+            "              },\n" +
+            "              \"goodsMarginToSettle\": 0.0,\n" +
+            "              \"marginBatchNo\": \"0\"\n" +
+            "            }\n" +
+            "          ],\n" +
+            "          \"objectId\": \"2\"\n" +
+            "        }\n" +
+            "      ],\n" +
+            "      \"priceObjectCount\": 1.0\n" +
+            "    },\n" +
+            "    \"paymentInfo\": {\n" +
+            "      \"ratioPaymentAfterInspection\": 0.0,\n" +
+            "      \"ratioDownPayment\": 90.0,\n" +
+            "      \"paymentOrder\": 1,\n" +
+            "      \"ratioPaymentAfterInvoice\": 10.0,\n" +
+            "      \"selectExchangeType\": -1,\n" +
+            "      \"paymentMethod\": \"0\"\n" +
+            "    }\n" +
+            "  },\n" +
+            "  \"script\": [\n" +
+            "    \"// import sum\",\n" +
+            "    \"def invoiceLeg = internalParams.legs.find { it.type.equals('invoiceLeg') }\",\n" +
+            "    \"def strPayBatch = ''\",\n" +
+            "    \"if(invoiceLeg != null) {\",\n" +
+            "    \"  def idx = variables.settlementBatches.findIndexOf({it -> it.batchNo.equals(externalParams.settlementBatchNo)})\",\n" +
+            "    \"  if(idx >= 0) {\",\n" +
+            "    \"    if (externalParams.payerId.equals(invoiceLeg.payer)) {\",\n" +
+            "    \"      variables.settlementBatches[idx].invoiceWeight += externalParams.invoiceWeight\",\n" +
+            "    \"      variables.settlementBatches[idx].invoiceAmount += externalParams.invoiceAmount\",\n" +
+            "    \"    } else {\",\n" +
+            "    \"      variables.settlementBatches[idx].invoiceWeight -= externalParams.invoiceWeight\",\n" +
+            "    \"      variables.settlementBatches[idx].invoiceAmount -= externalParams.invoiceAmount\",\n" +
+            "    \"    }\",\n" +
+            "    \"    if(variables.settlementBatches[idx].isSell == 0) { // only purchase contract has invoice subject\",\n" +
+            "    \"      def idxPayInvoice = variables.paymentBatches.findIndexOf({it -> (it.settlementBatchNo.equals(externalParams.settlementBatchNo) && it.paymentType == 1)})\",\n" +
+            "    \"      strPayBatch = variables.paymentBatches[idxPayInvoice].batchNo\",\n" +
+            "    \"      variables.paymentBatches[idxPayInvoice].weightExpected += externalParams.invoiceWeight\",\n" +
+            "    \"      def newExpCash = externalParams.invoiceWeight * variables.settlementBatches[idx].settlementPrice * internalParams.paymentInfo.ratioPaymentAfterInvoice / 100\",\n" +
+            "    \"      variables.paymentBatches[idxPayInvoice].cashExpected = (variables.paymentBatches[idxPayInvoice].cashExpected + newExpCash).round(2)\",\n" +
+            "    \"      variables.settlementBatches[idx].expectedCashAfterInvoice = variables.paymentBatches[idxPayInvoice].cashExpected\",\n" +
+            "    \"    }\",\n" +
+            "    \"  }\",\n" +
+            "    \"}\",\n" +
+            "    \"if(instructionPipeline.indexOf('invoiceAcknowledgmentInstruction') < 0) {\",\n" +
+            "    \"  instructionPipeline.add('invoiceAcknowledgmentInstruction')\",\n" +
+            "    \"}\",\n" +
+            "    \"dslResult = [\",\n" +
+            "    \"  eventNo: externalParams.eventNo,\",\n" +
+            "    \"  settlementBatchNo: externalParams.settlementBatchNo,\",\n" +
+            "    \"  paymentBatchNo: strPayBatch,\",\n" +
+            "    \"  tradeId: externalParams.tradeId,\",\n" +
+            "    \"  dealId: externalParams.dealId,\",\n" +
+            "    \"  status: sum(0,1)\",\n" +
+            "    \"]\"\n" +
+            "  ]\n" +
+            "}\n";
 
     @Autowired
     public MessageServiceImpl(MessageRepository messageRepository, ContractBeanRepository contractBeanRepository,
@@ -69,67 +153,76 @@ public class MessageServiceImpl implements MessageService{
         save(message);
         MessageProcessResponse response = new MessageProcessResponse();
         MessageTitle msgTitle = MessageTitle.fromValue(message.getTitle());
-        if (msgTitle != null) {
-            switch (msgTitle) {
-                case UPLOAD_CONTENT:
-                    int resCode = uploadContent(message.getBody());
-                    if (resCode == 0) {
-                        response.setResCode(resCode);
-                        response.setMessageUuid(message.getMessageUuid());
-                        response.setResMsg("Successfully upload the new contract!");
-                    } else {
-                        response.setResCode(-1);
-                        response.setMessageUuid(message.getMessageUuid());
-                        response.setResMsg("Failed to upload the contract content!");
-                    }
-                    break;
-                case EVENT:
-                    return processEvent(message.getBody());
-
-                default:
-                    break;
-            }
+        if (msgTitle == null) {
+            String resMsg = String.format("Invalid message title: %s!", message.getTitle());
+            log.error(resMsg);
+            response.setMessageUuid(message.getMessageUuid());
+            response.setResCode(-1);
+            response.setResMsg(resMsg);
+            return response;
+        }
+        switch (msgTitle) {
+            case UPLOAD_CONTENT:
+                try {
+                    response = uploadContent(message);
+                } catch (JsonProcessingException e) {
+                    throw new RuntimeException(e);
+                }
+                break;
+            case EVENT:
+                try {
+                    response = processEvent(message);
+                } catch (JsonProcessingException e) {
+                    throw new RuntimeException(e);
+                }
+                break;
+            default:
+                break;
         }
         return response;
     }
 
-    private int uploadContent(String msgBody) {
-        ObjectMapper objectMapper = new ObjectMapper();
-        try {
-            ContractBean contractBean = objectMapper.readValue(msgBody, ContractBean.class);
-            // get the corresponding template with templateId
-            String templateId = contractBean.getContractTemplateId();
-            Optional<ContractTemplateBean> templateBean = contractTemplateBeanRepository.findByContractTemplateId(templateId);
-            // add the default template content to the contractBean
-            if (templateBean.isPresent()) {
-                DealBean templateDealBean = templateBean.get().getTrades().get(0).getDeals().get(0);
-                List<TradeBean> trades = new ArrayList<>();
-                for (TradeBean tradeBean : contractBean.getTrades()) {
-                    List<DealBean> deals = new ArrayList<>();
-                    for (DealBean dealBean : tradeBean.getDeals()) {
-                        dealBean.setContractState(templateDealBean.getContractState());
-                        dealBean.setEvents(templateDealBean.getEvents());
-                        dealBean.setObservations(templateDealBean.getObservations());
-                        deals.add(dealBean);
-                    }
-                    tradeBean.setDeals(deals);
-                    trades.add(tradeBean);
+    private MessageProcessResponse uploadContent(Message message) throws JsonProcessingException {
+        MessageProcessResponse response = new MessageProcessResponse();
+        String msgBody = message.getBody();
+        ContractBean contractBean = objectMapper.readValue(msgBody, ContractBean.class);
+        // get the corresponding template with templateId
+        String templateId = contractBean.getContractTemplateId();
+        Optional<ContractTemplateBean> templateBean = contractTemplateBeanRepository.findByContractTemplateId(templateId);
+        // add the default template content to the contractBean
+        if (templateBean.isPresent()) {
+            DealBean templateDealBean = templateBean.get().getTrades().get(0).getDeals().get(0);
+            List<TradeBean> trades = new ArrayList<>();
+            for (TradeBean tradeBean : contractBean.getTrades()) {
+                List<DealBean> deals = new ArrayList<>();
+                for (DealBean dealBean : tradeBean.getDeals()) {
+                    dealBean.setContractState(templateDealBean.getContractState());
+                    dealBean.setEvents(templateDealBean.getEvents());
+                    dealBean.setObservations(templateDealBean.getObservations());
+                    deals.add(dealBean);
                 }
-                contractBean.setTrades(trades);
-                contractBean.setFunctions(templateBean.get().getFunctions());
-                contractBean.setInstructions(templateBean.get().getInstructions());
-                contractBean.setCreateTime(new Date());
-            } else {
-                log.error("Failed to get the contract template bean with templateId: {}!", templateId);
-                return -1;
+                tradeBean.setDeals(deals);
+                trades.add(tradeBean);
             }
-            contractBeanRepository.save(contractBean);
-            return 0;
-        } catch (Exception e) {
-            e.printStackTrace();
-            log.error("Failed to save the contract bean!");
-            return -1;
+            contractBean.setTrades(trades);
+            contractBean.setFunctions(templateBean.get().getFunctions());
+            contractBean.setInstructions(templateBean.get().getInstructions());
+            contractBean.setCreateTime(new Date());
+        } else {
+            String resMsg = String.format("Failed to get the contract template bean with templateId: %s!", templateId);
+            log.error(resMsg);
+            response.setMessageUuid(message.getMessageUuid());
+            response.setResCode(-1);
+            response.setResMsg(resMsg);
+            return response;
         }
+        contractBeanRepository.save(contractBean);
+        String resMsg = String.format("Successfully upload the content with contractNo: %s!",
+                contractBean.getBasicInfo().getContractNo());
+        response.setMessageUuid(message.getMessageUuid());
+        response.setResCode(1);
+        response.setResMsg(resMsg);
+        return response;
     }
 
 //    public static void main(String[] args) {
@@ -138,7 +231,9 @@ public class MessageServiceImpl implements MessageService{
 //    }
 
 
-    private MessageProcessResponse processEvent(String msgBody) {
+    private MessageProcessResponse processEvent(Message message) throws JsonProcessingException {
+        MessageProcessResponse response = new MessageProcessResponse();
+        String msgBody = message.getBody();
         JSONObject dslParam = new JSONObject();
         JSONObject msgObj = JSONObject.parseObject(msgBody);
         JSONObject eventParams = (JSONObject) msgObj.get("paramHash");
@@ -147,49 +242,67 @@ public class MessageServiceImpl implements MessageService{
         String tradeId = msgObj.getString("tradeId");
         String dealId = msgObj.getString("dealId");
         log.info("msgBody: {}", msgObj);
-        Optional<ContractBean> optionalContractBean = contractBeanRepository.findTopContractBeanByBasicInfo_ContractNoOrderByCreateTimeDesc(contractCode);
-        if (optionalContractBean.isPresent()) {
-            ContractBean contractBean = optionalContractBean.get();
-            TradeBean tradeBean = contractBean.getTrades().stream()
-                    .filter(trade -> trade.getTradeId().equals(tradeId))
-                    .findAny().orElse(null);
-            if (tradeBean != null) {
-                DealBean dealBean = tradeBean.getDeals().stream()
-                        .filter(deal -> deal.getDealId().equals(dealId))
-                        .findAny().orElse(null);
-                if (dealBean != null) {
-                    EventBean eventBean = dealBean.getEvents().stream()
-                            .filter(event -> event.getName().equals(eventName))
-                            .findAny().orElse(null);
-                    JSONObject internalParamBean = Objects.requireNonNull(eventBean).getInternalParams();
-                    JSONObject internalParams = new JSONObject();
-                    ObjectMapper objectMapper = new ObjectMapper();
-                    try {
-                        Object contractPathObj = Configuration.defaultConfiguration().jsonProvider()
-                                .parse(objectMapper.writeValueAsString(contractBean));
-                        for (String key : internalParamBean.keySet()) {
-                            internalParams.put(key, JsonPath.read(contractPathObj, internalParamBean.getString(key)));
-                        }
-                    } catch (JsonProcessingException e) {
-                        throw new RuntimeException(e);
-                    }
 
-                    dslParam.put("internalParams", internalParams);
-                    dslParam.put("externalParams", eventParams);
-                    dslParam.put("variables", dealBean.getContractState().getVariables());
-                    dslParam.put("script", Objects.requireNonNull(eventBean).getHandler().getScript());
-                    dslParam.put("functions", contractBean.getFunctions());
-//                    log.info("dslParam: {}", dslParam);
-                } else {
-                    log.error("dealBean null");
-                }
-            } else {
-                log.error("tradeBean null");
-            }
+        Optional<ContractBean> optionalContractBean = contractBeanRepository
+                .findTopContractBeanByBasicInfo_ContractNoOrderByCreateTimeDesc(contractCode);
+        if (!optionalContractBean.isPresent()) {
+            String resMsg = String.format("No contract bean found for contractCode %s", contractCode);
+            log.error(resMsg);
+            response.setMessageUuid(message.getMessageUuid());
+            response.setResCode(-1);
+            response.setResMsg(resMsg);
+            return response;
         }
-        JSONObject dslResult = runPyScript(dslParam);
-        log.info("dslResult: {}", dslResult);
+        ContractBean contractBean = optionalContractBean.get();
 
+        TradeBean tradeBean = contractBean.getTrades().stream()
+                .filter(trade -> trade.getTradeId().equals(tradeId))
+                .findAny().orElse(null);
+        if (tradeBean == null) {
+            String resMsg = String.format("No trade bean found for tradeId %s", tradeId);
+            log.error(resMsg);
+            response.setMessageUuid(message.getMessageUuid());
+            response.setResCode(-1);
+            response.setResMsg(resMsg);
+            return response;
+        }
+
+        DealBean dealBean = tradeBean.getDeals().stream()
+                .filter(deal -> deal.getDealId().equals(dealId))
+                .findAny().orElse(null);
+        if (dealBean == null) {
+            String resMsg = String.format("No deal bean found for dealId %s", dealId);
+            log.error(resMsg);
+            response.setMessageUuid(message.getMessageUuid());
+            response.setResCode(-1);
+            response.setResMsg(resMsg);
+            return response;
+        }
+
+        EventBean eventBean = dealBean.getEvents().stream()
+                .filter(event -> event.getName().equals(eventName))
+                .findAny().orElse(null);
+
+        // Read the internalParams from contractBean with json path
+        JSONObject internalParamBean = Objects.requireNonNull(eventBean).getInternalParams();
+        JSONObject internalParams = new JSONObject();
+        String contractBeanJson = objectMapper.writeValueAsString(contractBean);
+        Object contractPathObj = Configuration.defaultConfiguration().jsonProvider().parse(contractBeanJson);
+        for (String key : internalParamBean.keySet()) {
+            internalParams.put(key, JsonPath.read(contractPathObj, internalParamBean.getString(key)));
+        }
+
+        dslParam.put("internalParams", internalParams); // including legs, margin, variables, tradeVariables...
+        dslParam.put("externalParams", eventParams);
+        dslParam.put("script", Objects.requireNonNull(eventBean).getHandler().getScript());
+        dslParam.put("functions", contractBean.getFunctions());
+//                    log.info("dslParam: {}", dslParam);
+
+//        JSONObject dslResult = runPyScript(dslParam);
+        JSONObject dslResult = objectMapper.readValue(TEST_STRING, JSONObject.class);
+//        log.info("dslResult: {}", dslResult);
+
+        // Save the dslHistory record with dslParam and dslResult from python script
         DslHistory dslHistoryRecord = new DslHistory();
         dslHistoryRecord.setDslParam(String.valueOf(dslParam));
         dslHistoryRecord.setEventNo(eventParams.getString("eventNo"));
@@ -202,8 +315,43 @@ public class MessageServiceImpl implements MessageService{
         dslHistoryRecord.setDslResult(String.valueOf(dslResult));
 //        dslHistoryRepository.save(dslHistoryRecord);
 
-        return null;
+        // Write and save the variables to contractBean
+        List<ReturnParamBean> returnParamsBeanList = Objects.requireNonNull(eventBean).getReturnParams();
+        for (ReturnParamBean returnParamsBean: returnParamsBeanList) {
+            String from = returnParamsBean.getFrom().split("\\.")[1];
+            String to = returnParamsBean.getTo();
+            String toContractCode = returnParamsBean.getToContractCode();
+            log.info("from: {}, to: {}, toContractCode: {}", from, to, toContractCode);
+            // For bundled contracts, write variables to the contractBean with specified toContractCode.
+            // Otherwise, write variables to the original default contractBean.
+            String toContractCodeBeanJson;
+            if (!StringUtils.isEmpty(toContractCode)) {
+                Optional<ContractBean> toContractCodeBeanOptional = contractBeanRepository
+                        .findTopContractBeanByBasicInfo_ContractNoOrderByCreateTimeDesc(toContractCode);
+                if (!toContractCodeBeanOptional.isPresent()) {
+                    String resMsg = String.format("No contract bean found for toContractCode %s", toContractCode);
+                    log.error(resMsg);
+                    response.setMessageUuid(message.getMessageUuid());
+                    response.setResCode(-1);
+                    response.setResMsg(resMsg);
+                    return response;
+                }
+                toContractCodeBeanJson = objectMapper.writeValueAsString(toContractCodeBeanOptional.get());
+            } else {
+                toContractCodeBeanJson = contractBeanJson;
+            }
+            Object fromVariables = ((HashMap<?, ?>) dslResult.get("internalParams")).get(from);
+            String updatedToContractCodeBeanJson = JsonPath.parse(toContractCodeBeanJson).set(to, fromVariables)
+                    .jsonString();
+            ContractBean updatedContractBean = objectMapper.readValue(updatedToContractCodeBeanJson,
+                    ContractBean.class);
+            log.info("updatedContractBean: {}", updatedContractBean.getTrades().get(0).getDeals().get(0).getContractState().getVariables());
+//            contractBeanRepository.save(updatedContractBean);
+        }
+        response.setMessageUuid(message.getMessageUuid());
+        response.setResCode(1);
+        String msg = String.format("Successfully processed the event %s", eventParams.getString("eventNo"));
+        response.setResMsg(msg);
+        return response;
     }
-
-
 }
