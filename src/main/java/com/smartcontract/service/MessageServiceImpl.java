@@ -15,23 +15,26 @@ import com.smartcontract.model.Message;
 import com.smartcontract.model.MessageProcessResponse;
 import com.smartcontract.model.ReturnParamBean;
 import com.smartcontract.model.TradeBean;
-import com.smartcontract.repository.ContractBeanRepository;
-import com.smartcontract.repository.ContractTemplateBeanRepository;
-import com.smartcontract.repository.DslHistoryRepository;
 import com.smartcontract.repository.MessageRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.groovy.parser.antlr4.util.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.Resource;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
-import static com.smartcontract.service.ScriptProcessHelper.runPyScript;
 import static com.smartcontract.util.CustomObjectMapper.createObjectMapper;
 
 @Service
@@ -40,11 +43,16 @@ public class MessageServiceImpl implements MessageService{
 
     private final MessageRepository messageRepository;
 
-    private final ContractBeanRepository contractBeanRepository;
+    private final ContractBeanService contractBeanService;
 
-    private final ContractTemplateBeanRepository contractTemplateBeanRepository;
+    private final ContractTemplateBeanService contractTemplateBeanService;
 
-    private final DslHistoryRepository dslHistoryRepository;
+    private final DslHistoryService dslHistoryService;
+
+    @Resource(name = "taskExecutor")
+    private final ThreadPoolTaskExecutor taskExecutor;
+
+    private final ConcurrentHashMap<String, Lock> contractCodeLocks = new ConcurrentHashMap<>();
 
     private final ObjectMapper objectMapper = createObjectMapper();
 
@@ -127,13 +135,15 @@ public class MessageServiceImpl implements MessageService{
             "}\n";
 
     @Autowired
-    public MessageServiceImpl(MessageRepository messageRepository, ContractBeanRepository contractBeanRepository,
-                              ContractTemplateBeanRepository contractTemplateBeanRepository,
-                              DslHistoryRepository dslHistoryRepository) {
+    public MessageServiceImpl(MessageRepository messageRepository, ContractBeanService contractBeanService,
+                              ContractTemplateBeanService contractTemplateBeanService,
+                              DslHistoryService dslHistoryService,
+                              @Qualifier("taskExecutor") ThreadPoolTaskExecutor taskExecutor) {
         this.messageRepository = messageRepository;
-        this.contractBeanRepository = contractBeanRepository;
-        this.contractTemplateBeanRepository = contractTemplateBeanRepository;
-        this.dslHistoryRepository = dslHistoryRepository;
+        this.contractBeanService = contractBeanService;
+        this.contractTemplateBeanService = contractTemplateBeanService;
+        this.dslHistoryService = dslHistoryService;
+        this.taskExecutor = taskExecutor;
     }
 
     @Override
@@ -149,49 +159,74 @@ public class MessageServiceImpl implements MessageService{
 
     @Override
     public MessageProcessResponse route(Message message) {
+        if (message == null) {
+            log.error("message is null!");
+            return null;
+        }
+        log.info("Process message: {}", message);
         // save the message
         save(message);
         MessageProcessResponse response = new MessageProcessResponse();
+        response.setMessageUuid(message.getMessageUuid());
         MessageTitle msgTitle = MessageTitle.fromValue(message.getTitle());
         if (msgTitle == null) {
             String resMsg = String.format("Invalid message title: %s!", message.getTitle());
             log.error(resMsg);
-            response.setMessageUuid(message.getMessageUuid());
             response.setResCode(-1);
             response.setResMsg(resMsg);
             return response;
         }
+        Integer resCode;
         switch (msgTitle) {
             case UPLOAD_CONTENT:
                 try {
-                    response = uploadContent(message);
+                    resCode = uploadContent(message);
                 } catch (JsonProcessingException e) {
                     throw new RuntimeException(e);
                 }
                 break;
             case EVENT:
-                try {
-                    response = processEvent(message);
-                } catch (JsonProcessingException e) {
-                    throw new RuntimeException(e);
-                }
+                String msgBody = message.getBody();
+                JSONObject msgObj = JSONObject.parseObject(msgBody);
+                String contractCode = msgObj.getString("contractCode");
+                AtomicReference<Integer> tmpCode = new AtomicReference<>();
+                taskExecutor.execute(() -> {
+                    Lock contractCodeLock = contractCodeLocks.computeIfAbsent(contractCode, k -> new ReentrantLock());
+                    try {
+                        contractCodeLock.lock();
+                        tmpCode.set(processEvent(message));
+                    } catch (JsonProcessingException e) {
+                        throw new RuntimeException(e);
+                    } finally {
+                        contractCodeLock.unlock();
+                    }
+                });
+                resCode = tmpCode.get();
                 break;
             default:
+                resCode = -1;
                 break;
         }
+        String resMsg;
+        if (resCode.equals(-1)) {
+            resMsg = String.format("Failed to process the message with messageUuid: %s", message.getMessageUuid());
+        } else {
+            resMsg = String.format("Succeed to process the message with messageUuid: %s", message.getMessageUuid());
+        }
+        response.setResCode(resCode);
+        response.setResMsg(resMsg);
         return response;
     }
 
-    private MessageProcessResponse uploadContent(Message message) throws JsonProcessingException {
-        MessageProcessResponse response = new MessageProcessResponse();
+    private Integer uploadContent(Message message) throws JsonProcessingException {
         String msgBody = message.getBody();
         ContractBean contractBean = objectMapper.readValue(msgBody, ContractBean.class);
         // get the corresponding template with templateId
         String templateId = contractBean.getContractTemplateId();
-        Optional<ContractTemplateBean> templateBean = contractTemplateBeanRepository.findByContractTemplateId(templateId);
+        ContractTemplateBean templateBean = contractTemplateBeanService.getContractTemplateBeanByTemplateId(templateId);
         // add the default template content to the contractBean
-        if (templateBean.isPresent()) {
-            DealBean templateDealBean = templateBean.get().getTrades().get(0).getDeals().get(0);
+        if (templateBean != null) {
+            DealBean templateDealBean = templateBean.getTrades().get(0).getDeals().get(0);
             List<TradeBean> trades = new ArrayList<>();
             for (TradeBean tradeBean : contractBean.getTrades()) {
                 List<DealBean> deals = new ArrayList<>();
@@ -205,34 +240,22 @@ public class MessageServiceImpl implements MessageService{
                 trades.add(tradeBean);
             }
             contractBean.setTrades(trades);
-            contractBean.setFunctions(templateBean.get().getFunctions());
-            contractBean.setInstructions(templateBean.get().getInstructions());
+            contractBean.setFunctions(templateBean.getFunctions());
+            contractBean.setInstructions(templateBean.getInstructions());
             contractBean.setCreateTime(new Date());
         } else {
             String resMsg = String.format("Failed to get the contract template bean with templateId: %s!", templateId);
             log.error(resMsg);
-            response.setMessageUuid(message.getMessageUuid());
-            response.setResCode(-1);
-            response.setResMsg(resMsg);
-            return response;
+            return -1;
         }
-        contractBeanRepository.save(contractBean);
+        Integer resCode = contractBeanService.save(contractBean);
         String resMsg = String.format("Successfully upload the content with contractNo: %s!",
                 contractBean.getBasicInfo().getContractNo());
-        response.setMessageUuid(message.getMessageUuid());
-        response.setResCode(1);
-        response.setResMsg(resMsg);
-        return response;
+        log.info(resMsg);
+        return resCode;
     }
 
-//    public static void main(String[] args) {
-//        String msgBody = "{\"basicInfo\":{\"contractName\":\"20230801-JNK-MNNSB003-01\",\"contractNo\":\"20230801-JNK-MNNSB003-01\",\"contractWeight\":200000.0,\"direction\":0,\"effectiveFromDate\":\"\",\"effectiveToDate\":\"9999-12-31\",\"futuresContract\":\"SM403.CZC,SM404.CZC,SM405.CZC,SM406.CZC,SM407.CZC,SM408.CZC,SM409.CZC,SM410.CZC,SM411.CZC,SM412.CZC\",\"logicContractCode\":\"20230801-JNK-MNNSB003\",\"multiFixing\":false,\"settlePricingEnd\":\"2024-08-01 00:00:00\",\"signAddress\":\"上海市虹口区\",\"signDate\":\"2023-08-01\",\"varietyId\":\"13\"},\"contractTemplateId\":\"65b0b7636b8cb80a1102185b\",\"deleted\":false,\"parties\":[{\"address\":\"XXX\",\"bankAccountName\":\"银河德睿资本管理有限公司\",\"bankAccountNo\":\"121912493410501\",\"bankBranchName\":\"中国工商银行股份有限公司新余新城支行\",\"contact\":\"XX\",\"id\":\"1\",\"name\":\"银河德睿资本管理有限公司\",\"partyId\":\"1\",\"telephone\":\"15000000000\",\"wechat\":\"15000000000\"},{\"address\":\"\",\"contact\":\"\",\"id\":\"2983\",\"name\":\"嘉能可有限公司\",\"partyId\":\"2983\",\"telephone\":\"\",\"wechat\":\"\"}],\"trades\":[{\"deals\":[{\"dealId\":\"20230801-JNK-MNNSB003-01\",\"dealInfo\":{\"margin\":{\"detailList\":[],\"isAutoRelease\":false,\"isInitialMargin\":false,\"isMarkToMarket\":false,\"isPerformance\":false,\"isPerformanceMarkToMarket\":false,\"itemList\":[],\"objectId\":\"2983\",\"riskAddMarginRatio\":10.0,\"status\":1,\"subjectId\":\"1\"},\"riskMarginRatio\":10.0,\"indexClosePrice\":6778.0,\"paymentInfo\":{\"paymentOrder\":0,\"ratioDownPayment\":100.0,\"ratioPaymentAfterInspection\":0.0,\"ratioPaymentAfterInvoice\":0.0},\"basicInfo\":{\"$ref\":\"$.basicInfo\"}},\"dealType\":\"accumulator\",\"effectiveDate\":{\"required\":true,\"value\":\"9999-12-31\"},\"legs\":[{\"basis\":0.0,\"fixingPrice\":0.0,\"goodsCode\":\"1\",\"goodsId\":\"22053\",\"name\":\"physicalLeg\",\"payer\":\"2983\",\"receiver\":\"1\",\"referenceInstrument\":\"SM403.CZC,SM404.CZC,SM405.CZC,SM406.CZC,SM407.CZC,SM408.CZC,SM409.CZC,SM410.CZC,SM411.CZC,SM412.CZC\",\"resource\":{\"category\":\"24\",\"deliveryPoint\":\"\",\"quantity\":{\"cap\":200000.0,\"floor\":0.0},\"quantityUnit\":\"T\",\"resourceType\":1,\"variety\":\"13\"},\"sequence\":\"1\",\"settlementAmount\":\"\",\"spread\":0.0,\"taxPercentage\":0.13,\"type\":\"physicalLeg\",\"unitPrice\":0.0,\"weight\":200000.0},{\"name\":\"cashLeg\",\"payer\":\"1\",\"receiver\":\"2983\",\"referenceInstrument\":\"SM403.CZC,SM404.CZC,SM405.CZC,SM406.CZC,SM407.CZC,SM408.CZC,SM409.CZC,SM410.CZC,SM411.CZC,SM412.CZC\",\"sequence\":\"2\",\"settlementAmount\":\"\",\"type\":\"cashLeg\"},{\"name\":\"invoiceLeg\",\"payer\":\"2983\",\"receiver\":\"1\",\"sequence\":\"3\",\"type\":\"invoiceLeg\"}],\"settlementCurrency\":\"CNY\",\"tradeId\":\"20230801-JNK-MNNSB003-01\"}],\"tradeId\":\"20230801-JNK-MNNSB003-01\",\"tradeType\":\"\"}],\"version\":0}";
-//        saveContractBean(msgBody);
-//    }
-
-
-    private MessageProcessResponse processEvent(Message message) throws JsonProcessingException {
-        MessageProcessResponse response = new MessageProcessResponse();
+    private Integer processEvent(Message message) throws JsonProcessingException {
         String msgBody = message.getBody();
         JSONObject dslParam = new JSONObject();
         JSONObject msgObj = JSONObject.parseObject(msgBody);
@@ -242,18 +265,12 @@ public class MessageServiceImpl implements MessageService{
         String tradeId = msgObj.getString("tradeId");
         String dealId = msgObj.getString("dealId");
         log.info("msgBody: {}", msgObj);
-
-        Optional<ContractBean> optionalContractBean = contractBeanRepository
-                .findTopContractBeanByBasicInfo_ContractNoOrderByCreateTimeDesc(contractCode);
-        if (!optionalContractBean.isPresent()) {
+        ContractBean contractBean = contractBeanService.getLatestContractBeanByContractCode(contractCode);
+        if (contractBean == null) {
             String resMsg = String.format("No contract bean found for contractCode %s", contractCode);
             log.error(resMsg);
-            response.setMessageUuid(message.getMessageUuid());
-            response.setResCode(-1);
-            response.setResMsg(resMsg);
-            return response;
+            return -1;
         }
-        ContractBean contractBean = optionalContractBean.get();
 
         TradeBean tradeBean = contractBean.getTrades().stream()
                 .filter(trade -> trade.getTradeId().equals(tradeId))
@@ -261,10 +278,7 @@ public class MessageServiceImpl implements MessageService{
         if (tradeBean == null) {
             String resMsg = String.format("No trade bean found for tradeId %s", tradeId);
             log.error(resMsg);
-            response.setMessageUuid(message.getMessageUuid());
-            response.setResCode(-1);
-            response.setResMsg(resMsg);
-            return response;
+            return -1;
         }
 
         DealBean dealBean = tradeBean.getDeals().stream()
@@ -273,10 +287,7 @@ public class MessageServiceImpl implements MessageService{
         if (dealBean == null) {
             String resMsg = String.format("No deal bean found for dealId %s", dealId);
             log.error(resMsg);
-            response.setMessageUuid(message.getMessageUuid());
-            response.setResCode(-1);
-            response.setResMsg(resMsg);
-            return response;
+            return -1;
         }
 
         EventBean eventBean = dealBean.getEvents().stream()
@@ -313,7 +324,15 @@ public class MessageServiceImpl implements MessageService{
         dslHistoryRecord.setDealId(dealId);
         dslHistoryRecord.setCreateTime(new Date());
         dslHistoryRecord.setDslResult(String.valueOf(dslResult));
-//        dslHistoryRepository.save(dslHistoryRecord);
+//        Integer hisResCode = dslHistoryService.save(dslHistoryRecord);
+//        if (hisResCode.equals(-1)) {
+//            String resMsg = String.format("Failed to save dslHistory for contractCode %s", contractCode);
+//            log.error(resMsg);
+//            response.setMessageUuid(message.getMessageUuid());
+//            response.setResCode(hisResCode);
+//            response.setResMsg(resMsg);
+//            return response;
+//        }
 
         // Write and save the variables to contractBean
         List<ReturnParamBean> returnParamsBeanList = Objects.requireNonNull(eventBean).getReturnParams();
@@ -326,17 +345,13 @@ public class MessageServiceImpl implements MessageService{
             // Otherwise, write variables to the original default contractBean.
             String toContractCodeBeanJson;
             if (!StringUtils.isEmpty(toContractCode)) {
-                Optional<ContractBean> toContractCodeBeanOptional = contractBeanRepository
-                        .findTopContractBeanByBasicInfo_ContractNoOrderByCreateTimeDesc(toContractCode);
-                if (!toContractCodeBeanOptional.isPresent()) {
+                ContractBean toContractCodeBean = contractBeanService.getLatestContractBeanByContractCode(toContractCode);
+                if (toContractCodeBean == null) {
                     String resMsg = String.format("No contract bean found for toContractCode %s", toContractCode);
                     log.error(resMsg);
-                    response.setMessageUuid(message.getMessageUuid());
-                    response.setResCode(-1);
-                    response.setResMsg(resMsg);
-                    return response;
+                    return -1;
                 }
-                toContractCodeBeanJson = objectMapper.writeValueAsString(toContractCodeBeanOptional.get());
+                toContractCodeBeanJson = objectMapper.writeValueAsString(toContractCodeBean);
             } else {
                 toContractCodeBeanJson = contractBeanJson;
             }
@@ -348,10 +363,8 @@ public class MessageServiceImpl implements MessageService{
             log.info("updatedContractBean: {}", updatedContractBean.getTrades().get(0).getDeals().get(0).getContractState().getVariables());
 //            contractBeanRepository.save(updatedContractBean);
         }
-        response.setMessageUuid(message.getMessageUuid());
-        response.setResCode(1);
         String msg = String.format("Successfully processed the event %s", eventParams.getString("eventNo"));
-        response.setResMsg(msg);
-        return response;
+        log.info(msg);
+        return 1;
     }
 }
