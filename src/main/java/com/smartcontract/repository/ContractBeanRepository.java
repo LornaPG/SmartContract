@@ -8,5 +8,5 @@ import java.util.Optional;
 
 public interface ContractBeanRepository extends MongoRepository<ContractBean, ObjectId> {
 
-    Optional<ContractBean> findTopContractBeanByBasicInfo_ContractNoOrderByCreateTimeDesc(String contractNo);
+    Optional<ContractBean> findTopContractBeanByBasicInfo_ContractNo(String contractNo);
 }

@@ -248,7 +248,7 @@ public class MessageServiceImpl implements MessageService{
             log.error(resMsg);
             return -1;
         }
-        Integer resCode = contractBeanService.save(contractBean);
+        Integer resCode = contractBeanService.insert(contractBean);
         String resMsg = String.format("Successfully upload the content with contractNo: %s!",
                 contractBean.getBasicInfo().getContractNo());
         log.info(resMsg);
