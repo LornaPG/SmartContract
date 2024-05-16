@@ -176,14 +176,20 @@ public class MessageServiceImpl implements MessageService{
             response.setResMsg(resMsg);
             return response;
         }
+        // Fail: -1, Success: 1
         Integer resCode;
         switch (msgTitle) {
             case UPLOAD_CONTENT:
+            case UPLOAD_HOLD_CONTENT:
                 try {
                     resCode = uploadContent(message);
                 } catch (JsonProcessingException e) {
                     throw new RuntimeException(e);
                 }
+                break;
+            case REMOVE_CONTENT:
+                // remove from contractBean, add to contractBeanHistory
+                resCode = removeContent(message);
                 break;
             case EVENT:
                 String msgBody = message.getBody();
@@ -231,7 +237,7 @@ public class MessageServiceImpl implements MessageService{
             for (TradeBean tradeBean : contractBean.getTrades()) {
                 List<DealBean> deals = new ArrayList<>();
                 for (DealBean dealBean : tradeBean.getDeals()) {
-                    dealBean.setContractState(templateDealBean.getContractState());
+//                    dealBean.setContractState(templateDealBean.getContractState());
                     dealBean.setEvents(templateDealBean.getEvents());
                     dealBean.setObservations(templateDealBean.getObservations());
                     deals.add(dealBean);
@@ -253,6 +259,11 @@ public class MessageServiceImpl implements MessageService{
                 contractBean.getBasicInfo().getContractNo());
         log.info(resMsg);
         return resCode;
+    }
+
+    private Integer removeContent(Message message) {
+        String contractCode = message.getBody();
+        return contractBeanService.removeFromContractBean(contractCode);
     }
 
     private Integer processEvent(Message message) throws JsonProcessingException {

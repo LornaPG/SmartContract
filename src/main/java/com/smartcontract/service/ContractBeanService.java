@@ -42,6 +42,17 @@ public class ContractBeanService {
         return 1;
     }
 
+    public Integer removeFromContractBean(String contractCode) {
+        ContractBean contractBean = getLatestContractBeanByContractCode(contractCode);
+        if (contractBean == null) {
+            log.error("Failed to find a contractBean with the contractCode {}!", contractCode);
+            return -1;
+        }
+        historyRepository.insert(contractBean);
+        repository.delete(contractBean);
+        return 1;
+    }
+
     public ContractBean getLatestContractBeanByContractCode(String contractCode) {
         Optional<ContractBean> optionalContractBean = repository
                 .findTopContractBeanByBasicInfo_ContractNo(contractCode);
