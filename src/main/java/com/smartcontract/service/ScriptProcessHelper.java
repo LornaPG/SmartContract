@@ -2,72 +2,42 @@ package com.smartcontract.service;
 
 import com.alibaba.fastjson.JSONObject;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+import java.io.File;
+import java.io.IOException;
+import java.util.Map;
 
-import com.smartcontract.model.FunctionBean;
-import groovy.lang.Binding;
 import groovy.lang.GroovyShell;
+import groovy.lang.Script;
 import lombok.extern.slf4j.Slf4j;
 
-import static com.smartcontract.util.TypeConverter.objToList;
+import static com.smartcontract.util.TypeConverter.objToMap;
 
 @Slf4j
 public class ScriptProcessHelper {
-    private static final String FUNCTION_PREFIX = "// import ";
-    private static final int WEIGHT_SCALE = 4;
-    private static final int AMOUNT_SCALE = 2;
-    public static JSONObject runPyScript(JSONObject dslParam) {
+    private static final String FILE_PREFIX = "src/main/groovy/com.smartcontract.template/";
+    public static Map<String, Object> runPyScript(String dealType, String eventName, JSONObject dslParam) throws IOException {
+        // Concat the groovy file name
+        String fileName = FILE_PREFIX;
+        switch (dealType) {
+            case "fixedPricing":
+                fileName += "FixedPricing.groovy";
+                break;
+            case "spotPricing":
+                fileName += "SpotPricing.groovy";
+                break;
+            default:
+                fileName += "OneForAll.groovy";
+                break;
+        }
+
         // Create GroovyShell
-        Binding binding = new Binding();
-        binding.setVariable("weightScale", WEIGHT_SCALE);
-        binding.setVariable("amountScale", AMOUNT_SCALE);
-//        binding.setVariable("variables", dslParam.get("variables"));
-        binding.setVariable("externalParams", dslParam.get("externalParams"));
-        binding.setVariable("internalParams", dslParam.get("internalParams"));
-        binding.setVariable("dslResult", null);
-        binding.setVariable("instructionPipeline", new ArrayList<>());
-        GroovyShell shell = new GroovyShell(binding);
+        GroovyShell shell = new GroovyShell();
 
         // Run Groovy script
-        dslParam.get("script");
-        String groovyScript = processScript(dslParam);
-        shell.evaluate(groovyScript);
-
-        // Convert the output format to json
-        JSONObject output = new JSONObject();
-        Object dslResult = binding.getVariable("dslResult");
-        Object instructionPipeline = binding.getVariable("instructionPipeline");
-        Object internalParamsResult = binding.getVariable("internalParams");
-        output.put("dslResult", dslResult);
-        output.put("internalParams", internalParamsResult);
-        output.put("instructionPipeline", instructionPipeline);
-        output.put("script", groovyScript);
-        return output;
-    }
-
-    private static String processScript(JSONObject dslParam) {
-        // Get the Groovy script from the JSON object
-        // Construct the script content as a single string
-        List<String> script = objToList(dslParam.get("script"), String.class);
-        List<FunctionBean> functions = objToList(dslParam.get("functions"), FunctionBean.class);
-        StringBuilder scriptContent = new StringBuilder();
-        for (String lineString : script) {
-            scriptContent.append(lineString).append("\n");
-            if (lineString.startsWith(FUNCTION_PREFIX)) {
-                String funcName = lineString.split(FUNCTION_PREFIX)[1];
-                for (FunctionBean func : functions) {
-                    if (Objects.equals(func.getFunctionName(), funcName)) {
-                        List<String> funcScript = func.getScript();
-                        for (String funcLineString : funcScript) {
-                            scriptContent.append(funcLineString).append("\n");
-                        }
-                    }
-                }
-            }
-        }
-        log.info("scriptContent: {}", scriptContent);
-        return String.valueOf(scriptContent);
+        File groovyFile = new File(fileName);
+        Script script = shell.parse(groovyFile);
+        Object result = script.invokeMethod(eventName, new Object[]{dslParam.get("externalParams"), dslParam.get("internalParams")});
+        log.info("result is {}", result);
+        return objToMap(result, String.class, Object.class);
     }
 }

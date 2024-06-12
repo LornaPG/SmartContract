@@ -1,7 +1,9 @@
 package com.smartcontract.util;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class TypeConverter {
     /**
@@ -18,5 +20,15 @@ public class TypeConverter {
             }
         }
         return list;
+    }
+
+    public static <K, V> Map<K, V> objToMap(Object obj, Class<K> kClass, Class<V> vClass) {
+        Map<K, V> map = new HashMap<>();
+        if (obj instanceof Map<?, ?>) {
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) obj).entrySet()) {
+                map.put(kClass.cast(entry.getKey()), vClass.cast(entry.getValue()));
+            }
+        }
+        return map;
     }
 }

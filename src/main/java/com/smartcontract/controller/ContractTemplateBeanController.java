@@ -12,11 +12,11 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/smartContract/contractTemplate")
-public class ContractTemplateController {
+public class ContractTemplateBeanController {
     private final ContractTemplateBeanService service;
 
     @Autowired
-    public ContractTemplateController(ContractTemplateBeanService service) {
+    public ContractTemplateBeanController(ContractTemplateBeanService service) {
         this.service = service;
     }
 

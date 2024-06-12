@@ -1,4 +1,4 @@
-package com.smartcontract.service;
+package com.smartcontract.service.impl;
 
 import com.alibaba.fastjson.JSONObject;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -16,30 +16,30 @@ import com.smartcontract.model.MessageProcessResponse;
 import com.smartcontract.model.ReturnParamBean;
 import com.smartcontract.model.TradeBean;
 import com.smartcontract.repository.MessageRepository;
+import com.smartcontract.service.ContractBeanService;
+import com.smartcontract.service.ContractTemplateBeanService;
+import com.smartcontract.service.DslHistoryService;
+import com.smartcontract.service.MessageService;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.groovy.parser.antlr4.util.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.Resource;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
+import static com.smartcontract.service.ScriptProcessHelper.runPyScript;
 import static com.smartcontract.util.CustomObjectMapper.createObjectMapper;
 
 @Service
 @Slf4j
-public class MessageServiceImpl implements MessageService{
+public class MessageServiceImpl implements MessageService {
 
     private final MessageRepository messageRepository;
 
@@ -49,101 +49,17 @@ public class MessageServiceImpl implements MessageService{
 
     private final DslHistoryService dslHistoryService;
 
-    @Resource(name = "taskExecutor")
-    private final ThreadPoolTaskExecutor taskExecutor;
-
-    private final ConcurrentHashMap<String, Lock> contractCodeLocks = new ConcurrentHashMap<>();
-
     private final ObjectMapper objectMapper = createObjectMapper();
 
-    private static final String TEST_STRING = "{\n" +
-            "  \"dslResult\": {\n" +
-            "    \"contractNo\": \"20240311-BDFZ-EGNSB005-01\",\n" +
-            "    \"dealId\": \"20240311-BDFZ-EGNSB005-01\",\n" +
-            "    \"tradeId\": \"20240311-BDFZ-EGNSB005-01\"\n" +
-            "  },\n" +
-            "  \"internalParams\": {\n" +
-            "    \"variables\": {\n" +
-            "      \"marginObservationCount\": 0.0,\n" +
-            "      \"feeDetailBatchCount\": 0.0,\n" +
-            "      \"priceObjects\": [\n" +
-            "        {\n" +
-            "          \"batchNo\": \"1\",\n" +
-            "          \"variationMarginData\": [\n" +
-            "            {\n" +
-            "              \"isFirst\": 1.0,\n" +
-            "              \"markContractCodeType\": 1.0,\n" +
-            "              \"dateRange\": {\n" +
-            "                \"dateList\": [\n" +
-            "                  \"currentDate()\"\n" +
-            "                ]\n" +
-            "              },\n" +
-            "              \"goodsMarginToSettle\": 0.0,\n" +
-            "              \"marginBatchNo\": \"0\"\n" +
-            "            }\n" +
-            "          ],\n" +
-            "          \"objectId\": \"2\"\n" +
-            "        }\n" +
-            "      ],\n" +
-            "      \"priceObjectCount\": 1.0\n" +
-            "    },\n" +
-            "    \"paymentInfo\": {\n" +
-            "      \"ratioPaymentAfterInspection\": 0.0,\n" +
-            "      \"ratioDownPayment\": 90.0,\n" +
-            "      \"paymentOrder\": 1,\n" +
-            "      \"ratioPaymentAfterInvoice\": 10.0,\n" +
-            "      \"selectExchangeType\": -1,\n" +
-            "      \"paymentMethod\": \"0\"\n" +
-            "    }\n" +
-            "  },\n" +
-            "  \"script\": [\n" +
-            "    \"// import sum\",\n" +
-            "    \"def invoiceLeg = internalParams.legs.find { it.type.equals('invoiceLeg') }\",\n" +
-            "    \"def strPayBatch = ''\",\n" +
-            "    \"if(invoiceLeg != null) {\",\n" +
-            "    \"  def idx = variables.settlementBatches.findIndexOf({it -> it.batchNo.equals(externalParams.settlementBatchNo)})\",\n" +
-            "    \"  if(idx >= 0) {\",\n" +
-            "    \"    if (externalParams.payerId.equals(invoiceLeg.payer)) {\",\n" +
-            "    \"      variables.settlementBatches[idx].invoiceWeight += externalParams.invoiceWeight\",\n" +
-            "    \"      variables.settlementBatches[idx].invoiceAmount += externalParams.invoiceAmount\",\n" +
-            "    \"    } else {\",\n" +
-            "    \"      variables.settlementBatches[idx].invoiceWeight -= externalParams.invoiceWeight\",\n" +
-            "    \"      variables.settlementBatches[idx].invoiceAmount -= externalParams.invoiceAmount\",\n" +
-            "    \"    }\",\n" +
-            "    \"    if(variables.settlementBatches[idx].isSell == 0) { // only purchase contract has invoice subject\",\n" +
-            "    \"      def idxPayInvoice = variables.paymentBatches.findIndexOf({it -> (it.settlementBatchNo.equals(externalParams.settlementBatchNo) && it.paymentType == 1)})\",\n" +
-            "    \"      strPayBatch = variables.paymentBatches[idxPayInvoice].batchNo\",\n" +
-            "    \"      variables.paymentBatches[idxPayInvoice].weightExpected += externalParams.invoiceWeight\",\n" +
-            "    \"      def newExpCash = externalParams.invoiceWeight * variables.settlementBatches[idx].settlementPrice * internalParams.paymentInfo.ratioPaymentAfterInvoice / 100\",\n" +
-            "    \"      variables.paymentBatches[idxPayInvoice].cashExpected = (variables.paymentBatches[idxPayInvoice].cashExpected + newExpCash).round(2)\",\n" +
-            "    \"      variables.settlementBatches[idx].expectedCashAfterInvoice = variables.paymentBatches[idxPayInvoice].cashExpected\",\n" +
-            "    \"    }\",\n" +
-            "    \"  }\",\n" +
-            "    \"}\",\n" +
-            "    \"if(instructionPipeline.indexOf('invoiceAcknowledgmentInstruction') < 0) {\",\n" +
-            "    \"  instructionPipeline.add('invoiceAcknowledgmentInstruction')\",\n" +
-            "    \"}\",\n" +
-            "    \"dslResult = [\",\n" +
-            "    \"  eventNo: externalParams.eventNo,\",\n" +
-            "    \"  settlementBatchNo: externalParams.settlementBatchNo,\",\n" +
-            "    \"  paymentBatchNo: strPayBatch,\",\n" +
-            "    \"  tradeId: externalParams.tradeId,\",\n" +
-            "    \"  dealId: externalParams.dealId,\",\n" +
-            "    \"  status: sum(0,1)\",\n" +
-            "    \"]\"\n" +
-            "  ]\n" +
-            "}\n";
-
     @Autowired
-    public MessageServiceImpl(MessageRepository messageRepository, ContractBeanService contractBeanService,
+    public MessageServiceImpl(MessageRepository messageRepository,
+                              ContractBeanService contractBeanService,
                               ContractTemplateBeanService contractTemplateBeanService,
-                              DslHistoryService dslHistoryService,
-                              @Qualifier("taskExecutor") ThreadPoolTaskExecutor taskExecutor) {
+                              DslHistoryService dslHistoryService) {
         this.messageRepository = messageRepository;
         this.contractBeanService = contractBeanService;
         this.contractTemplateBeanService = contractTemplateBeanService;
         this.dslHistoryService = dslHistoryService;
-        this.taskExecutor = taskExecutor;
     }
 
     @Override
@@ -165,7 +81,7 @@ public class MessageServiceImpl implements MessageService{
         }
         log.info("Process message: {}", message);
         // save the message
-        save(message);
+//        save(message);
         MessageProcessResponse response = new MessageProcessResponse();
         response.setMessageUuid(message.getMessageUuid());
         MessageTitle msgTitle = MessageTitle.fromValue(message.getTitle());
@@ -192,21 +108,19 @@ public class MessageServiceImpl implements MessageService{
                 resCode = removeContent(message);
                 break;
             case EVENT:
+                // Decide later for how to send dslResult event returned instruction, we may consider
+                // 1. Include the SmartContract project in mgmt system;
+                // 2. Consider synchronous API calls or asynchronous instruction messages for event process.
+                // 3. We may only save the contract data in contractBean, use up-to-date groovy script within the project
                 String msgBody = message.getBody();
                 JSONObject msgObj = JSONObject.parseObject(msgBody);
                 String contractCode = msgObj.getString("contractCode");
                 AtomicReference<Integer> tmpCode = new AtomicReference<>();
-                taskExecutor.execute(() -> {
-                    Lock contractCodeLock = contractCodeLocks.computeIfAbsent(contractCode, k -> new ReentrantLock());
-                    try {
-                        contractCodeLock.lock();
-                        tmpCode.set(processEvent(message));
-                    } catch (JsonProcessingException e) {
-                        throw new RuntimeException(e);
-                    } finally {
-                        contractCodeLock.unlock();
-                    }
-                });
+                try {
+                    tmpCode.set(processEvent(message));
+                    } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
                 resCode = tmpCode.get();
                 break;
             default:
@@ -266,11 +180,11 @@ public class MessageServiceImpl implements MessageService{
         return contractBeanService.removeFromContractBean(contractCode);
     }
 
-    private Integer processEvent(Message message) throws JsonProcessingException {
+    private Integer processEvent(Message message) throws IOException {
         String msgBody = message.getBody();
         JSONObject dslParam = new JSONObject();
         JSONObject msgObj = JSONObject.parseObject(msgBody);
-        JSONObject eventParams = (JSONObject) msgObj.get("paramHash");
+        JSONObject externalParams = (JSONObject) msgObj.get("paramHash");
         String eventName = msgObj.getString("eventName");
         String contractCode = msgObj.getString("contractCode");
         String tradeId = msgObj.getString("tradeId");
@@ -315,19 +229,16 @@ public class MessageServiceImpl implements MessageService{
         }
 
         dslParam.put("internalParams", internalParams); // including legs, margin, variables, tradeVariables...
-        dslParam.put("externalParams", eventParams);
-        dslParam.put("script", Objects.requireNonNull(eventBean).getHandler().getScript());
-        dslParam.put("functions", contractBean.getFunctions());
-//                    log.info("dslParam: {}", dslParam);
+        dslParam.put("externalParams", externalParams);
+        String dealType = dealBean.getDealType();
 
-//        JSONObject dslResult = runPyScript(dslParam);
-        JSONObject dslResult = objectMapper.readValue(TEST_STRING, JSONObject.class);
-//        log.info("dslResult: {}", dslResult);
+        Map<String, Object> dslResult = runPyScript(dealType, eventName, dslParam);
+        log.info("dslResult: {}", dslResult);
 
         // Save the dslHistory record with dslParam and dslResult from python script
         DslHistory dslHistoryRecord = new DslHistory();
         dslHistoryRecord.setDslParam(String.valueOf(dslParam));
-        dslHistoryRecord.setEventNo(eventParams.getString("eventNo"));
+        dslHistoryRecord.setEventNo(externalParams.getString("eventNo"));
         dslHistoryRecord.setEventName(eventName);
         dslHistoryRecord.setContractCode(contractCode);
         dslHistoryRecord.setLogicContractCode(msgObj.getString("logicContractCode"));
@@ -366,7 +277,7 @@ public class MessageServiceImpl implements MessageService{
             } else {
                 toContractCodeBeanJson = contractBeanJson;
             }
-            Object fromVariables = ((HashMap<?, ?>) dslResult.get("internalParams")).get(from);
+            Object fromVariables = dslResult.get(from);
             String updatedToContractCodeBeanJson = JsonPath.parse(toContractCodeBeanJson).set(to, fromVariables)
                     .jsonString();
             ContractBean updatedContractBean = objectMapper.readValue(updatedToContractCodeBeanJson,
@@ -374,7 +285,7 @@ public class MessageServiceImpl implements MessageService{
             log.info("updatedContractBean: {}", updatedContractBean.getTrades().get(0).getDeals().get(0).getContractState().getVariables());
 //            contractBeanRepository.save(updatedContractBean);
         }
-        String msg = String.format("Successfully processed the event %s", eventParams.getString("eventNo"));
+        String msg = String.format("Successfully processed the event %s", externalParams.getString("eventNo"));
         log.info(msg);
         return 1;
     }
