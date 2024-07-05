@@ -21,5 +21,5 @@ public class EventBean {
 
     private List<ReturnParamBean> returnParams;
 
-    private EventHandlerBean handler;
+//    private EventHandlerBean handler;
 }

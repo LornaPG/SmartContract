@@ -1,5 +1,7 @@
 package com.smartcontract.template
 
+import com.alibaba.fastjson.JSONObject
+
 static def sum(a, b) {
     return a + b
 }
@@ -39,9 +41,9 @@ static def invoiceAmountChange(externalParams, internalParams) {
             dealId: externalParams.dealId,
             status: sum(0,1)
     ]
-    return [
-            instructionPipeline: instructionPipeline,
-            instructionResult: dslResult,
-            variables: internalParams.variables
-    ]
+    def output = new JSONObject()
+    output.put("instructionPipeline", instructionPipeline)
+    output.put("instructionResult", dslResult)
+    output.put("variables", internalParams.variables)
+    return output
 }

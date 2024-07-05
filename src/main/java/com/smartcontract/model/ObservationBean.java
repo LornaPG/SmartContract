@@ -1,6 +1,5 @@
 package com.smartcontract.model;
 
-import com.alibaba.fastjson.JSONArray;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -23,5 +22,5 @@ public class ObservationBean {
 
     private List<ReturnParamBean> returnParams;
     
-    private ObservationLogicBean observationLogic;
+//    private ObservationLogicBean observationLogic;
 }

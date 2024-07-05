@@ -4,18 +4,15 @@ import com.alibaba.fastjson.JSONObject;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Map;
 
 import groovy.lang.GroovyShell;
 import groovy.lang.Script;
 import lombok.extern.slf4j.Slf4j;
 
-import static com.smartcontract.util.TypeConverter.objToMap;
-
 @Slf4j
 public class ScriptProcessHelper {
     private static final String FILE_PREFIX = "src/main/groovy/com.smartcontract.template/";
-    public static Map<String, Object> runPyScript(String dealType, String eventName, JSONObject dslParam) throws IOException {
+    public static JSONObject runPyScript(String dealType, String eventName, JSONObject dslParam) throws IOException {
         // Concat the groovy file name
         String fileName = FILE_PREFIX;
         switch (dealType) {
@@ -38,6 +35,6 @@ public class ScriptProcessHelper {
         Script script = shell.parse(groovyFile);
         Object result = script.invokeMethod(eventName, new Object[]{dslParam.get("externalParams"), dslParam.get("internalParams")});
         log.info("result is {}", result);
-        return objToMap(result, String.class, Object.class);
+        return (JSONObject) result;
     }
 }

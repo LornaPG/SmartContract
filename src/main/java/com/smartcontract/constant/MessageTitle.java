@@ -1,4 +1,4 @@
-package com.smartcontract;
+package com.smartcontract.constant;
 
 public enum MessageTitle {
     UPLOAD_CONTENT("uploadContent"),

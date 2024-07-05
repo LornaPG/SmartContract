@@ -30,5 +30,5 @@ public class ContractBean extends RecordBase {
 
     private List<TradeBean> trades;
 
-    private List<FunctionBean> functions;
+//    private List<FunctionBean> functions;
 }
