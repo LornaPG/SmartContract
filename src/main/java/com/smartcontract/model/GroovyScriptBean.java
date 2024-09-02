@@ -5,6 +5,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.bson.types.ObjectId;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.util.List;
@@ -12,19 +13,19 @@ import java.util.List;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Document(collection = "contractBean")
-public class ContractBean extends RecordBase {
-
+@Document(collection = "groovyScriptBean")
+public class GroovyScriptBean extends RecordBase {
     @Id
     private ObjectId _id;
 
-    private String contractTemplateId;
+    private String _class;
 
-    private List<PartyBean> parties;
+    @Indexed(unique = true)
+    private String scriptId;
 
-    private BasicInfoBean basicInfo;
+    private String scriptName;
 
-    private ContractStateBean contractState;
+    private List<String> content;
 
-    private List<TradeBean> trades;
+    private List<String> dependencyContent; // OneForAll.groovy
 }

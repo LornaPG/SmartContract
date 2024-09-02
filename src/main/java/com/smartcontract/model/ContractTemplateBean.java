@@ -39,5 +39,5 @@ public class ContractTemplateBean {
 
     private List<TradeBean> trades;
 
-    private Integer version;
+    private Long version;
 }

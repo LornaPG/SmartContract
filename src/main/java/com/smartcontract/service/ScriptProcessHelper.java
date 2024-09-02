@@ -11,8 +11,9 @@ import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 public class ScriptProcessHelper {
-    private static final String FILE_PREFIX = "src/main/groovy/com.smartcontract.template/";
-    public static JSONObject runPyScript(String dealType, String eventName, JSONObject dslParam) throws IOException {
+    private static final String FILE_PREFIX = "src/main/groovy/com/smartcontract/handler/";
+
+    public static JSONObject runPyScript(String dealType, String eventName, JSONObject eventParam) throws IOException {
         // Concat the groovy file name
         String fileName = FILE_PREFIX;
         switch (dealType) {
@@ -26,15 +27,13 @@ public class ScriptProcessHelper {
                 fileName += "OneForAll.groovy";
                 break;
         }
-
         // Create GroovyShell
         GroovyShell shell = new GroovyShell();
-
         // Run Groovy script
         File groovyFile = new File(fileName);
         Script script = shell.parse(groovyFile);
-        Object result = script.invokeMethod(eventName, new Object[]{dslParam.get("externalParams"), dslParam.get("internalParams")});
-        log.info("result is {}", result);
+        // Invoke method
+        Object result = script.invokeMethod(eventName, new Object[]{eventParam.get("externalParams"), eventParam.get("internalParams")});
         return (JSONObject) result;
     }
 }

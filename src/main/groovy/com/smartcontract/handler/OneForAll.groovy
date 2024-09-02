@@ -1,4 +1,4 @@
-package com.smartcontract.template
+package com.smartcontract.handler
 
 import com.alibaba.fastjson.JSONObject
 
@@ -33,7 +33,7 @@ static def invoiceAmountChange(externalParams, internalParams) {
     if(instructionPipeline.indexOf('invoiceAcknowledgmentInstruction') < 0) {
         instructionPipeline.add('invoiceAcknowledgmentInstruction')
     }
-    def dslResult = [
+    def outputResult = [
             eventNo: externalParams.eventNo,
             settlementBatchNo: externalParams.settlementBatchNo,
             paymentBatchNo: strPayBatch,
@@ -43,7 +43,7 @@ static def invoiceAmountChange(externalParams, internalParams) {
     ]
     def output = new JSONObject()
     output.put("instructionPipeline", instructionPipeline)
-    output.put("instructionResult", dslResult)
+    output.put("instructionResult", outputResult)
     output.put("variables", internalParams.variables)
     return output
 }

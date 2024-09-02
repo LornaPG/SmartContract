@@ -5,9 +5,7 @@ import com.smartcontract.model.MessageProcessResponse;
 
 public interface MessageService {
 
-    void save(Message message);
-
-    Message getByMessageUuid(String messageUuid);
+    Message save(Message message);
 
     MessageProcessResponse route(Message message);
 }

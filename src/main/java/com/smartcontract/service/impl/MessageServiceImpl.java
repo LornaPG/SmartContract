@@ -9,7 +9,7 @@ import com.smartcontract.constant.MessageTitle;
 import com.smartcontract.model.ContractBean;
 import com.smartcontract.model.ContractTemplateBean;
 import com.smartcontract.model.DealBean;
-import com.smartcontract.model.DslHistory;
+import com.smartcontract.model.EventHistory;
 import com.smartcontract.model.EventBean;
 import com.smartcontract.model.Message;
 import com.smartcontract.model.MessageProcessResponse;
@@ -18,8 +18,10 @@ import com.smartcontract.model.TradeBean;
 import com.smartcontract.repository.MessageRepository;
 import com.smartcontract.service.ContractBeanService;
 import com.smartcontract.service.ContractTemplateBeanService;
-import com.smartcontract.service.DslHistoryService;
+import com.smartcontract.service.EventHistoryService;
+import com.smartcontract.service.GroovyScriptService;
 import com.smartcontract.service.MessageService;
+import com.smartcontract.util.JsonRefResolver;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.groovy.parser.antlr4.util.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,7 +32,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
+import java.util.UUID;
 
 import static com.smartcontract.service.ScriptProcessHelper.runPyScript;
 import static com.smartcontract.util.CustomObjectMapper.createObjectMapper;
@@ -45,7 +47,9 @@ public class MessageServiceImpl implements MessageService {
 
     private final ContractTemplateBeanService contractTemplateBeanService;
 
-    private final DslHistoryService dslHistoryService;
+    private final EventHistoryService eventHistoryService;
+
+    private final GroovyScriptService groovyScriptService;
 
     private final ObjectMapper objectMapper = createObjectMapper();
 
@@ -53,22 +57,18 @@ public class MessageServiceImpl implements MessageService {
     public MessageServiceImpl(MessageRepository messageRepository,
                               ContractBeanService contractBeanService,
                               ContractTemplateBeanService contractTemplateBeanService,
-                              DslHistoryService dslHistoryService) {
+                              EventHistoryService eventHistoryService,
+                              GroovyScriptService groovyScriptService) {
         this.messageRepository = messageRepository;
         this.contractBeanService = contractBeanService;
         this.contractTemplateBeanService = contractTemplateBeanService;
-        this.dslHistoryService = dslHistoryService;
+        this.eventHistoryService = eventHistoryService;
+        this.groovyScriptService = groovyScriptService;
     }
 
     @Override
-    public void save(Message message) {
-        messageRepository.save(message);
-    }
-
-    @Override
-    public Message getByMessageUuid(String messageUuid) {
-        Optional<Message> message = messageRepository.getByMessageUuid(messageUuid);
-        return message.orElse(null);
+    public Message save(Message message) {
+        return messageRepository.save(message);
     }
 
     @Override
@@ -77,6 +77,8 @@ public class MessageServiceImpl implements MessageService {
             log.error("message is null!");
             return null;
         }
+        String messageUuid = UUID.randomUUID().toString().replace("-", "");
+        message.setMessageUuid(messageUuid);
         log.info("Process message: {}", message);
         // save the message
         save(message);
@@ -106,10 +108,11 @@ public class MessageServiceImpl implements MessageService {
                 resCode = removeContent(message);
                 break;
             case EVENT:
-                // Decide later for how to send dslResult event returned instruction, we may consider
-                // 1. Include the SmartContract project in mgmt system;
+                // Decide later for how to send outputResult event returned instruction, we may consider
+                // 1. Include the SmartContract project in mgmt system.
                 // 2. Consider synchronous API calls or asynchronous instruction messages for event process.
-                // 3. We may only save the contract data in contractBean, use up-to-date groovy script within the project
+                // 3. We may only save the contract data in contractBean, use up-to-date groovy script within the project.
+                // 4. Save all version scripts in groovyScriptBean, and record the scriptId for every event.
                 try {
                     resCode = processEvent(message);
                     } catch (IOException e) {
@@ -134,7 +137,7 @@ public class MessageServiceImpl implements MessageService {
     // Upload a new contract or an existing contract
     private Integer uploadContent(Message message) throws JsonProcessingException {
         String msgBody = message.getBody();
-        ContractBean contractBean = objectMapper.readValue(msgBody, ContractBean.class);
+        ContractBean contractBean = JsonRefResolver.resolveAndParse(msgBody, ContractBean.class, objectMapper);
         // get the corresponding template with templateId
         String templateId = contractBean.getContractTemplateId();
         ContractTemplateBean templateBean = contractTemplateBeanService.getContractTemplateBeanByTemplateId(templateId);
@@ -145,7 +148,6 @@ public class MessageServiceImpl implements MessageService {
             for (TradeBean tradeBean : contractBean.getTrades()) {
                 List<DealBean> deals = new ArrayList<>();
                 for (DealBean dealBean : tradeBean.getDeals()) {
-//                    dealBean.setContractState(templateDealBean.getContractState());
                     dealBean.setEvents(templateDealBean.getEvents());
                     dealBean.setObservations(templateDealBean.getObservations());
                     deals.add(dealBean);
@@ -154,8 +156,6 @@ public class MessageServiceImpl implements MessageService {
                 trades.add(tradeBean);
             }
             contractBean.setTrades(trades);
-//            contractBean.setFunctions(templateBean.getFunctions());
-            contractBean.setInstructions(templateBean.getInstructions());
             contractBean.setCreateTime(new Date());
         } else {
             String resMsg = String.format("Failed to get the contract template bean with templateId: %s!", templateId);
@@ -178,7 +178,7 @@ public class MessageServiceImpl implements MessageService {
     // Process events from mgmt
     private Integer processEvent(Message message) throws IOException {
         String msgBody = message.getBody();
-        JSONObject dslParam = new JSONObject();
+        JSONObject eventParam = new JSONObject();
         JSONObject msgObj = JSONObject.parseObject(msgBody);
         JSONObject externalParams = (JSONObject) msgObj.get("paramHash");
         String eventName = msgObj.getString("eventName");
@@ -224,27 +224,32 @@ public class MessageServiceImpl implements MessageService {
             internalParams.put(key, JsonPath.read(contractPathObj, internalParamBean.getString(key)));
         }
 
-        dslParam.put("internalParams", internalParams); // including legs, margin, variables, tradeVariables...
-        dslParam.put("externalParams", externalParams);
+        eventParam.put("internalParams", internalParams); // including legs, margin, variables, tradeVariables...
+        eventParam.put("externalParams", externalParams);
+        // Record the scriptId of the groovy script executing this event
         String dealType = dealBean.getDealType();
+        String handlerName = convertDealTypeToHandlerName(dealType);
+        String scriptId = groovyScriptService.getLatestScriptId(handlerName);
+        eventParam.put("scriptId", scriptId);
 
-        JSONObject dslResult = runPyScript(dealType, eventName, dslParam);
-        log.info("dslResult: {}", dslResult);
+        // Running event...
+        JSONObject outputResult = runPyScript(dealType, eventName, eventParam);
+        log.info("outputResult: {}", outputResult);
 
-        // Save the dslHistory record with dslParam and dslResult from python script
-        DslHistory dslHistoryRecord = new DslHistory();
-        dslHistoryRecord.setDslParam(String.valueOf(dslParam));
-        dslHistoryRecord.setEventNo(externalParams.getString("eventNo"));
-        dslHistoryRecord.setEventName(eventName);
-        dslHistoryRecord.setContractCode(contractCode);
-        dslHistoryRecord.setLogicContractCode(msgObj.getString("logicContractCode"));
-        dslHistoryRecord.setTradeId(tradeId);
-        dslHistoryRecord.setDealId(dealId);
-        dslHistoryRecord.setCreateTime(new Date());
-        dslHistoryRecord.setDslResult(String.valueOf(dslResult));
-        Integer hisResCode = dslHistoryService.save(dslHistoryRecord);
+        // Save the EventHistory record with eventParam and outputResult from python script
+        EventHistory eventHistoryRecord = new EventHistory();
+        eventHistoryRecord.setEventParam(String.valueOf(eventParam));
+        eventHistoryRecord.setEventNo(externalParams.getString("eventNo"));
+        eventHistoryRecord.setEventName(eventName);
+        eventHistoryRecord.setContractCode(contractCode);
+        eventHistoryRecord.setLogicContractCode(msgObj.getString("logicContractCode"));
+        eventHistoryRecord.setTradeId(tradeId);
+        eventHistoryRecord.setDealId(dealId);
+        eventHistoryRecord.setCreateTime(new Date());
+        eventHistoryRecord.setOutputResult(String.valueOf(outputResult));
+        Integer hisResCode = eventHistoryService.save(eventHistoryRecord);
         if (hisResCode.equals(-1)) {
-            String resMsg = String.format("Failed to save dslHistory for contractCode %s", contractCode);
+            String resMsg = String.format("Failed to save EventHistory for contractCode %s", contractCode);
             log.error(resMsg);
             return -1;
         }
@@ -270,7 +275,7 @@ public class MessageServiceImpl implements MessageService {
             } else {
                 toContractCodeBeanJson = contractBeanJson;
             }
-            Object fromVariables = dslResult.get(from);
+            Object fromVariables = outputResult.get(from);
             String updatedToContractCodeBeanJson = JsonPath.parse(toContractCodeBeanJson).set(to, fromVariables)
                     .jsonString();
             ContractBean updatedContractBean = objectMapper.readValue(updatedToContractCodeBeanJson,
@@ -281,5 +286,14 @@ public class MessageServiceImpl implements MessageService {
         String msg = String.format("Successfully processed the event %s", externalParams.getString("eventNo"));
         log.info(msg);
         return 1;
+    }
+
+    private String convertDealTypeToHandlerName(String dealType) {
+        if (StringUtils.isEmpty(dealType)) {
+            return dealType;
+        }
+        char[] charArray = dealType.toCharArray();
+        charArray[0] = Character.toUpperCase(charArray[0]);
+        return new String(charArray);
     }
 }

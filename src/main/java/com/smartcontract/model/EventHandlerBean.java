@@ -7,6 +7,7 @@ import java.util.List;
 
 @Data
 @NoArgsConstructor
+@Deprecated
 public class EventHandlerBean {
 
     private String requiredState;

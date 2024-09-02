@@ -10,8 +10,6 @@ import java.util.List;
 @NoArgsConstructor
 public class EventBean {
     private String name;
-    
-    private List<String> ruleScript;
 
     private JSONObject externalParams;
 
@@ -20,6 +18,4 @@ public class EventBean {
     private JSONObject internalParams;
 
     private List<ReturnParamBean> returnParams;
-
-//    private EventHandlerBean handler;
 }

@@ -16,7 +16,7 @@ public class DealBean {
     private String dealType;
     
     private JSONObject dealInfo;
-    
+
     private ContractStateBean contractState;
     
     private DateBean effectiveDate;
@@ -24,8 +24,8 @@ public class DealBean {
     private DateBean terminationDate;
     
     private String settlementCurrency;
-    
-    private List<LegBean> legs;
+
+    private List<JSONObject> legs;
     
     private List<ObservationBean> observations;
     

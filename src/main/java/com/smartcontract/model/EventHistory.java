@@ -10,8 +10,8 @@ import org.springframework.data.mongodb.core.mapping.Document;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Document(collection = "dslHistory")
-public class DslHistory extends RecordBase {
+@Document(collection = "eventHistory")
+public class EventHistory extends RecordBase {
     @Id
     private ObjectId _id;
 
@@ -23,9 +23,9 @@ public class DslHistory extends RecordBase {
 
     private String dealId;
 
-    private String dslParam;
+    private String eventParam;
 
-    private String dslResult;
+    private String outputResult;
 
     private String eventName;
 
