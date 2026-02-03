@@ -17,6 +17,7 @@ public class EventHistoryServiceImpl implements EventHistoryService {
         this.repository = repository;
     }
 
+    @Override
     public Integer save(EventHistory eventHistory) {
         if (eventHistory == null) {
             log.error("eventHistory is null!");

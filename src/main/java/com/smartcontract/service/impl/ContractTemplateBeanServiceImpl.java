@@ -21,6 +21,7 @@ public class ContractTemplateBeanServiceImpl implements ContractTemplateBeanServ
         this.repository = repository;
     }
 
+    @Override
     public ContractTemplateBean getContractTemplateBeanByTemplateId(String contractTemplateId) {
         if (StringUtils.isEmpty(contractTemplateId)) {
             return null;
@@ -30,6 +31,7 @@ public class ContractTemplateBeanServiceImpl implements ContractTemplateBeanServ
         return optionalContractTemplateBean.orElse(null);
     }
 
+    @Override
     public AddContractTemplateResponse addTemplate(ContractTemplateBean contractTemplate) {
         AddContractTemplateResponse response = new AddContractTemplateResponse();
         if (contractTemplate == null) {

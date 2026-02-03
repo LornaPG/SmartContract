@@ -26,6 +26,7 @@ public class ContractBeanServiceImpl implements ContractBeanService {
         this.historyRepository = historyRepository;
     }
 
+    @Override
     public Integer insert(ContractBean contractBean) {
         if (contractBean == null || contractBean.getBasicInfo() == null
                 || StringUtils.isEmpty(contractBean.getBasicInfo().getContractNo())) {
@@ -48,6 +49,7 @@ public class ContractBeanServiceImpl implements ContractBeanService {
         return 1;
     }
 
+    @Override
     public Integer removeFromContractBean(String contractCode) {
         ContractBean contractBean = getLatestContractBeanByContractCode(contractCode);
         if (contractBean == null) {
@@ -61,6 +63,7 @@ public class ContractBeanServiceImpl implements ContractBeanService {
         return 1;
     }
 
+    @Override
     public ContractBean getLatestContractBeanByContractCode(String contractCode) {
         Optional<ContractBean> optionalContractBean = repository
                 .findTopContractBeanByBasicInfo_ContractNo(contractCode);
